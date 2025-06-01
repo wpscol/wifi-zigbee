@@ -20,6 +20,7 @@
 using namespace ns3;
 
 void ReportWifiStats(Ptr<FlowMonitor> monitor, Ptr<Ipv4FlowClassifier> classifier, uint16_t wifiPort = 5000);
+void ReportZigbeeStats(Ptr<FlowMonitor> monitor, Ptr<Ipv4FlowClassifier> classifier, uint16_t zigbeePort);
 
 NS_LOG_COMPONENT_DEFINE("wifi-zigbee-coex");
 
@@ -27,13 +28,16 @@ int main(int argc, char* argv[]) {
   // Log configuration
   LogComponentEnable("wifi-zigbee-coex", LOG_LEVEL_INFO);
 
-  // Base configuration
+  // WiFi configuration
   std::string wifiStandard = "80211n";
-  uint32_t nZigbee = 5;
   double simulationTime = 30;
-  uint16_t zigbeePort = 9; // Port dla aplikacji Zigbee
-  std::string zigbeeDataRate = "5kbps";
-  uint32_t zigbeePacketSize = 100; // Rozmiar pakietu w bajtach
+  uint16_t wifiPort = 5000;
+
+  // ZigBee configuration
+  uint32_t nZigbee = 5;
+  uint16_t zigbeePort = 9;
+  std::string zigbeeDataRate = "2048kbps";
+  uint32_t zigbeePacketSize = 100;
 
   // Get configuration
   CommandLine cmd;
@@ -87,7 +91,7 @@ int main(int argc, char* argv[]) {
   staPos->Add(Vector(5.0, 0.0, 1.2));
   staPos->Add(Vector(-5.0, 0.0, 1.2));
 
-  // ZigBee
+  // ZigBee (on the line of the circle)
   for (uint32_t i = 0; i < nZigbee; ++i) {
     double angle = 2 * M_PI * i / nZigbee;
     double x = 10.0 * std::cos(angle);
@@ -122,16 +126,20 @@ int main(int argc, char* argv[]) {
   wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager", "DataMode", StringValue("HtMcs7"), "ControlMode",
                                StringValue("HtMcs0"));
 
+  // Wifi configuration
   WifiMacHelper mac;
   Ssid ssid = Ssid("coex");
+
   mac.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid));
   NetDeviceContainer staDev = wifi.Install(wifiPhy, mac, sta);
+
   mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
   NetDeviceContainer apDev = wifi.Install(wifiPhy, mac, ap);
 
   // LR-WPAN configuration
   LrWpanHelper lrWpan;
   lrWpan.SetChannel(ch);
+
   NetDeviceContainer zbDev = lrWpan.Install(zigbee);
   lrWpan.CreateAssociatedPan(zbDev, 0x1234);
 
@@ -188,12 +196,10 @@ int main(int argc, char* argv[]) {
 
   // Assign IPv4 to ZigBee Zibhee
   Ipv4AddressHelper ipv4Zb;
-  ipv4Zb.SetBase("10.1.1.0", "255.255.255.0");
-  ipv4Zb.Assign(sixLowPanDevices);
+  ipv4Zb.SetBase("10.255.255.0", "255.255.255.0");
+  Ipv4InterfaceContainer zbIfaces = ipv4Zb.Assign(sixLowPanDevices);
 
   // Configure WiFi application
-  uint16_t wifiPort = 5000;
-
   PacketSinkHelper wifiSink("ns3::UdpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), wifiPort));
   ApplicationContainer wifiSinkApp = wifiSink.Install(ap.Get(0));
   wifiSinkApp.Start(Seconds(0.0));
@@ -212,16 +218,16 @@ int main(int argc, char* argv[]) {
   }
 
   PacketSinkHelper zigbeeSinkHelper("ns3::UdpSocketFactory",
-                                    ns3::Address(ns3::InetSocketAddress(ns3::Ipv4Address("10.1.1.1"), 9)));
+                                    ns3::Address(ns3::InetSocketAddress(ns3::Ipv4Address("10.255.255.1"), 9)));
   ApplicationContainer zigbeeSinkApp = zigbeeSinkHelper.Install(zigbee.Get(0)); // Koordynator jako serwer
   zigbeeSinkApp.Start(Seconds(1.5));                                            // Start po utworzeniu sieci Zigbee
   zigbeeSinkApp.Stop(Seconds(simulationTime));
 
-  Address zigbeeServerAddress = zbDev.Get(0)->GetAddress();
+  Ipv4Address coordIp = zbIfaces.GetAddress(0);
   OnOffHelper zigbeeClientHelper("ns3::UdpSocketFactory",
-                                 ns3::Address(ns3::InetSocketAddress(ns3::Ipv4Address::GetAny(), 9)));
-  zigbeeClientHelper.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=1]"));
-  zigbeeClientHelper.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
+                                 ns3::InetSocketAddress(InetSocketAddress(coordIp, zigbeePort)));
+  // zigbeeClientHelper.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=1]"));
+  // zigbeeClientHelper.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
   zigbeeClientHelper.SetAttribute("DataRate", DataRateValue(DataRate(zigbeeDataRate)));
   zigbeeClientHelper.SetAttribute("PacketSize", UintegerValue(zigbeePacketSize));
 
@@ -246,9 +252,12 @@ int main(int argc, char* argv[]) {
 
   // Get results
   Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier>(fm.GetClassifier());
+
+  // WiFi stats
   ReportWifiStats(mon, classifier, wifiPort);
 
-  // NOWE: Raportowanie statystyk Zigbee
+  // Zigbee stats
+  ReportZigbeeStats(mon, classifier, zigbeePort);
 
   Simulator::Destroy();
   return 0;
@@ -257,37 +266,83 @@ int main(int argc, char* argv[]) {
 // Calculation function
 void ReportWifiStats(Ptr<FlowMonitor> monitor, Ptr<Ipv4FlowClassifier> classifier, uint16_t wifiPort) {
   std::cout << "\n=== Wi-Fi Flow Summary ===\n"
-            << "SrcAddr  → DstAddr  RxBytes  Lost  Throughput(Mb/s)  "
-            << "AvgDelay(ms)  Jitter(ms)\n";
+            << "SrcAddr  → DstAddr    TxPkts   RxPkts   LostPkts   "
+            << "Thru(Mb/s)    AvgDelay(ms)    Jitter(ms)    PDR(%)\n";
 
-  monitor->CheckForLostPackets(); // Sprawdź przed iteracją
+  monitor->CheckForLostPackets(); // Upewnij się, że statystyki są aktualne
 
-  for (const auto& f : monitor->GetFlowStats()) {
+  for (auto const& f : monitor->GetFlowStats()) {
     const FlowMonitor::FlowStats& st = f.second;
     Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(f.first);
 
-    // Filtruj tylko przepływy UDP na określonym porcie WiFi
+    // Filtruj tylko UDP‐flowy na zadanym porcie WiFi
     if (t.protocol != 17 || t.destinationPort != wifiPort) {
       continue;
     }
 
+    // Czas trwania (w sekundach)
     double duration = (st.timeLastRxPacket - st.timeFirstTxPacket).GetSeconds();
-    if (duration == 0 && st.rxBytes > 0) // Jeśli tylko jeden pakiet, ustaw małą niezerową wartość
-    {
+    if (duration == 0 && st.rxBytes > 0) {
       duration = (Simulator::Now() - st.timeFirstTxPacket).GetSeconds();
     }
-    if (duration == 0 && st.rxBytes == 0) // Brak ruchu lub błąd
-    {
-      duration = -1; // Aby uniknąć dzielenia przez zero i oznaczyć jako nieprawidłowe
+    if (duration <= 0 && st.rxBytes == 0) {
+      duration = -1.0; // brak ruchu
     }
 
-    double thrMbps = (duration > 0) ? (st.rxBytes * 8.0) / (duration * 1e6) : 0.0;
-    double avgDelay = st.rxPackets ? st.delaySum.GetMilliSeconds() / st.rxPackets : 0.0;
-    double avgJit = st.rxPackets > 1 ? st.jitterSum.GetMilliSeconds() / (st.rxPackets - 1)
-                                     : 0.0; // Jitter potrzebuje co najmniej 2 pakietów
+    // Throughput w Mb/s
+    double thrMbps = (duration > 0.0) ? (st.rxBytes * 8.0) / (duration * 1e6) : 0.0;
 
-    std::cout << t.sourceAddress << " → " << t.destinationAddress << "  " << st.rxBytes << "    " << st.lostPackets
-              << "     " << std::fixed << std::setprecision(2) << thrMbps << "          " << std::setprecision(3)
-              << avgDelay << "          " << avgJit << '\n';
+    // Średnie opóźnienie (ms)
+    double avgDelay = (st.rxPackets > 0) ? st.delaySum.GetMilliSeconds() / st.rxPackets : 0.0;
+
+    // Średni jitter (ms) (wymaga co najmniej dwóch odebranych pakietów)
+    double avgJit = (st.rxPackets > 1) ? st.jitterSum.GetMilliSeconds() / (st.rxPackets - 1) : 0.0;
+
+    // PDR (%) = 100 * rxPackets / txPackets
+    double pdr = (st.txPackets > 0) ? (static_cast<double>(st.rxPackets) / st.txPackets) * 100.0 : 0.0;
+
+    std::cout << std::fixed << std::setprecision(6) << t.sourceAddress << " → " << t.destinationAddress << "    "
+              << st.txPackets << "    " << st.rxPackets << "    " << st.lostPackets << "    " << thrMbps << "    "
+              << avgDelay << "    " << avgJit << "    " << pdr << "\n";
+  }
+}
+
+void ReportZigbeeStats(Ptr<FlowMonitor> monitor, Ptr<Ipv4FlowClassifier> classifier, uint16_t zigbeePort) {
+  std::cout << "\n=== ZigBee Flow Summary ===\n"
+            << "SrcAddr  → DstAddr    TxPkts   RxPkts   LostPkts   "
+            << "Thru(kb/s)    AvgDelay(ms)    Jitter(ms)    PDR(%)\n";
+
+  monitor->CheckForLostPackets();
+
+  for (auto const& f : monitor->GetFlowStats()) {
+    const FlowMonitor::FlowStats& st = f.second;
+    Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(f.first);
+
+    // Filtrujemy tylko UDP flowy pod portem ZigBee (np. 9)
+    if (t.protocol != 17 || t.destinationPort != zigbeePort) {
+      continue;
+    }
+
+    // Czas trwania
+    double duration = (st.timeLastRxPacket - st.timeFirstTxPacket).GetSeconds();
+    if (duration == 0 && st.rxBytes > 0) {
+      duration = (Simulator::Now() - st.timeFirstTxPacket).GetSeconds();
+    }
+    if (duration <= 0 && st.rxBytes == 0) {
+      duration = -1.0;
+    }
+
+    // Throughput w kb/s (bo ZigBee dane są małe)
+    double thrKbps = (duration > 0.0) ? (st.rxBytes * 8.0) / (duration * 1e3) : 0.0;
+
+    double avgDelay = (st.rxPackets > 0) ? st.delaySum.GetMilliSeconds() / st.rxPackets : 0.0;
+
+    double avgJit = (st.rxPackets > 1) ? st.jitterSum.GetMilliSeconds() / (st.rxPackets - 1) : 0.0;
+
+    double pdr = (st.txPackets > 0) ? (static_cast<double>(st.rxPackets) / st.txPackets) * 100.0 : 0.0;
+
+    std::cout << std::fixed << std::setprecision(6) << t.sourceAddress << " → " << t.destinationAddress << "    "
+              << st.txPackets << "    " << st.rxPackets << "    " << st.lostPackets << "    " << thrKbps << "    "
+              << avgDelay << "    " << avgJit << "    " << pdr << "\n";
   }
 }

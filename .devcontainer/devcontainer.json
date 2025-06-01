@@ -6,5 +6,15 @@
   // Specify container to attach to
   "service": "devcontainer",
   // Specify mounted directory
-  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}"
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "git.autofetch": true
+      },
+      "extensions": [
+        "ms-vscode.cpptools-extension-pack"
+      ]
+    }
+  }
 }
