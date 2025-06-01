@@ -1,0 +1,9 @@
+/ns-allinone-3.44/**/*
+*.tar.gz
+*.tar
+*.tar.bz2
+/output/**/*
+.env
+.env*
+!.env.example
+.venv
