@@ -1,8 +1,10 @@
 #include "ns3/applications-module.h"
+#include "ns3/arp-cache.h"
 #include "ns3/core-module.h"
 #include "ns3/flow-monitor-module.h"
 #include "ns3/inet-socket-address.h"
 #include "ns3/internet-module.h"
+#include "ns3/ipv4-l3-protocol.h"
 #include "ns3/log.h"
 #include "ns3/lr-wpan-module.h"
 #include "ns3/mobility-module.h"
@@ -28,9 +30,14 @@ int main(int argc, char* argv[]) {
   // Log configuration
   LogComponentEnable("wifi-zigbee-coex", LOG_LEVEL_INFO);
 
+  // Simulation configuration
+  double simulationTime = 30;
+  double warmupTime = 1.5;
+
   // WiFi configuration
   std::string wifiStandard = "80211n";
-  double simulationTime = 30;
+  std::string wifiDataRate = "65Mbps";
+  uint32_t wifiPacketSize = 1472;
   uint16_t wifiPort = 5000;
 
   // ZigBee configuration
@@ -42,8 +49,11 @@ int main(int argc, char* argv[]) {
   // Get configuration
   CommandLine cmd;
   cmd.AddValue("wifiStandard", "Choose standard to use: 80211n | 80211ac | 80211ax ", wifiStandard);
+  cmd.AddValue("wifiDataRate", "Data rate for Wifi devices", wifiDataRate);
+  cmd.AddValue("wifiPacketSize", "Wifi packet size", wifiPacketSize);
   cmd.AddValue("nZigbee", "Number of ZigBee devices", nZigbee);
   cmd.AddValue("simulationTime", "How long simulation should run (s)", simulationTime);
+  cmd.AddValue("warmupTime", "How many seconds to run as warmup (before measurements)", simulationTime);
   cmd.AddValue("zigbeeDataRate", "Data rate for Zigbee client", zigbeeDataRate);
   cmd.AddValue("zigbeePacketSize", "Packet size for Zigbee client", zigbeePacketSize);
   cmd.Parse(argc, argv);
@@ -51,14 +61,16 @@ int main(int argc, char* argv[]) {
   // Print configuration
   NS_LOG_INFO("wifi-zigbee-coex - configuration:");
   NS_LOG_INFO("> wifiStandard: " << wifiStandard);
+  NS_LOG_INFO("> wifiDataRate: " << wifiDataRate);
   NS_LOG_INFO("> nZigbee: " << nZigbee);
   NS_LOG_INFO("> simulationTime: " << simulationTime);
+  NS_LOG_INFO("> warmupTime: " << warmupTime);
   NS_LOG_INFO("> zigbeeDataRate: " << zigbeeDataRate);
   NS_LOG_INFO("> zigbeePacketSize: " << zigbeePacketSize);
 
-  Ptr<SpectrumChannel> ch = CreateObject<MultiModelSpectrumChannel>();
-  ch->SetPropagationDelayModel(CreateObject<ConstantSpeedPropagationDelayModel>());
-  ch->AddPropagationLossModel(CreateObject<LogDistancePropagationLossModel>());
+  Ptr<SpectrumChannel> commonChannel = CreateObject<MultiModelSpectrumChannel>();
+  commonChannel->SetPropagationDelayModel(CreateObject<ConstantSpeedPropagationDelayModel>());
+  commonChannel->AddPropagationLossModel(CreateObject<LogDistancePropagationLossModel>());
 
   // Single AP
   NodeContainer ap;
@@ -110,7 +122,7 @@ int main(int argc, char* argv[]) {
 
   // Configure channel
   SpectrumWifiPhyHelper wifiPhy;
-  wifiPhy.SetChannel(ch);
+  wifiPhy.SetChannel(commonChannel);
   // wifiPhy.Set("Frequency", UintegerValue(2412));
 
   // Set WiFi standard
@@ -123,8 +135,10 @@ int main(int argc, char* argv[]) {
     wifi.SetStandard(WIFI_STANDARD_80211ax);
   }
 
-  wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager", "DataMode", StringValue("HtMcs7"), "ControlMode",
-                               StringValue("HtMcs0"));
+  // wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager", "DataMode", StringValue("HtMcs7"), "ControlMode",
+  //                              StringValue("HtMcs0"));
+
+  wifi.SetRemoteStationManager("ns3::MinstrelHtWifiManager");
 
   // Wifi configuration
   WifiMacHelper mac;
@@ -138,7 +152,7 @@ int main(int argc, char* argv[]) {
 
   // LR-WPAN configuration
   LrWpanHelper lrWpan;
-  lrWpan.SetChannel(ch);
+  lrWpan.SetChannel(commonChannel);
 
   NetDeviceContainer zbDev = lrWpan.Install(zigbee);
   lrWpan.CreateAssociatedPan(zbDev, 0x1234);
@@ -202,26 +216,26 @@ int main(int argc, char* argv[]) {
   // Configure WiFi application
   PacketSinkHelper wifiSink("ns3::UdpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), wifiPort));
   ApplicationContainer wifiSinkApp = wifiSink.Install(ap.Get(0));
-  wifiSinkApp.Start(Seconds(0.0));
-  wifiSinkApp.Stop(Seconds(simulationTime));
+  wifiSinkApp.Start(Seconds(warmupTime));
+  wifiSinkApp.Stop(Seconds(warmupTime + simulationTime));
 
   ApplicationContainer wifiTrafficApps;
   for (NodeContainer::Iterator it = sta.Begin(); it != sta.End(); ++it) {
     Address dst(InetSocketAddress(Ipv4Address("10.0.0.1"), wifiPort));
     OnOffHelper onoff("ns3::UdpSocketFactory", dst);
-    onoff.SetConstantRate(DataRate("600Mbps"), 1472);
+    onoff.SetConstantRate(DataRate(wifiDataRate), wifiPacketSize);
 
     ApplicationContainer app = onoff.Install(*it);
-    app.Start(Seconds(1.0));
-    app.Stop(Seconds(simulationTime));
+    app.Start(Seconds(warmupTime));
+    app.Stop(Seconds(warmupTime + simulationTime));
     wifiTrafficApps.Add(app);
   }
 
   PacketSinkHelper zigbeeSinkHelper("ns3::UdpSocketFactory",
                                     ns3::Address(ns3::InetSocketAddress(ns3::Ipv4Address("10.255.255.1"), 9)));
-  ApplicationContainer zigbeeSinkApp = zigbeeSinkHelper.Install(zigbee.Get(0)); // Koordynator jako serwer
-  zigbeeSinkApp.Start(Seconds(1.5));                                            // Start po utworzeniu sieci Zigbee
-  zigbeeSinkApp.Stop(Seconds(simulationTime));
+  ApplicationContainer zigbeeSinkApp = zigbeeSinkHelper.Install(zigbee.Get(0));
+  zigbeeSinkApp.Start(Seconds(warmupTime));
+  zigbeeSinkApp.Stop(Seconds(warmupTime + simulationTime));
 
   Ipv4Address coordIp = zbIfaces.GetAddress(0);
   OnOffHelper zigbeeClientHelper("ns3::UdpSocketFactory",
@@ -232,15 +246,15 @@ int main(int argc, char* argv[]) {
   zigbeeClientHelper.SetAttribute("PacketSize", UintegerValue(zigbeePacketSize));
 
   ApplicationContainer zigbeeClientApp = zigbeeClientHelper.Install(zigbee.Get(1)); // Drugi węzeł Zigbee jako klient
-  zigbeeClientApp.Start(Seconds(2.0)); // Start po tym, jak serwer i sieć są gotowe
-  zigbeeClientApp.Stop(Seconds(simulationTime - 1.0));
+  zigbeeClientApp.Start(Seconds(warmupTime));
+  zigbeeClientApp.Stop(Seconds(warmupTime + simulationTime));
 
   // FlowMonitor
   FlowMonitorHelper fm;
-  Ptr<FlowMonitor> mon = fm.InstallAll(); // Monitoruje również ruch Zigbee jeśli przechodzi przez NetDevices
+  Ptr<FlowMonitor> mon = fm.InstallAll();
 
   // Simulation start/finish
-  Simulator::Stop(Seconds(simulationTime));
+  Simulator::Stop(Seconds(warmupTime + simulationTime));
 
   NS_LOG_INFO("Starting simulation");
   auto t0 = std::chrono::steady_clock::now();
