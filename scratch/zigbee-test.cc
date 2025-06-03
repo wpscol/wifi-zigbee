@@ -63,6 +63,10 @@ NS_LOG_COMPONENT_DEFINE("ZigbeeRouting");
 
 ZigbeeStackContainer zigbeeStacks;
 
+static const uint32_t g_totalDevices = 5;
+static uint32_t g_joinedCount = 0;
+static bool g_networkReady = false;
+
 static void TraceRoute(Mac16Address src, Mac16Address dst) {
   std::cout << "\nTime " << Simulator::Now().As(Time::S) << " | "
             << "Traceroute to destination [" << dst << "]:\n";
@@ -148,6 +152,13 @@ static void NwkJoinConfirm(Ptr<ZigbeeStack> stack, NlmeJoinConfirmParams params)
               << params.m_networkAddress << " on the Extended PAN Id: " << std::hex << params.m_extendedPanId << "\n"
               << std::dec;
 
+    // Iterate joined devices
+    ++g_joinedCount;
+    if (g_joinedCount == (g_totalDevices - 1)) {
+      g_networkReady = true;
+      std::cout << Simulator::Now().As(Time::S) << " | All Zigbee nodes join the network" << std::endl;
+    }
+
     // 3 - After dev 1 is associated, it should be started as a router
     //     (i.e. it becomes able to accept request from other devices to join the network)
     NlmeStartRouterRequestParams startRouterParams;
@@ -194,7 +205,7 @@ static void SendData(Ptr<ZigbeeStack> stackSrc, Ptr<ZigbeeStack> stackDst) {
 int main(int argc, char* argv[]) {
   LogComponentEnableAll(LogLevel(LOG_PREFIX_TIME | LOG_PREFIX_FUNC | LOG_PREFIX_NODE));
   // Enable logs for further details
-  LogComponentEnable("ZigbeeNwk", LOG_LEVEL_DEBUG);
+  // LogComponentEnable("ZigbeeNwk", LOG_LEVEL_DEBUG);
 
   // Simulation settings
   std::string wifiDataRate = "60Mbps";
@@ -251,6 +262,7 @@ int main(int argc, char* argv[]) {
   // Configure WiFi
   SpectrumWifiPhyHelper wifiPhyHelper;
   wifiPhyHelper.SetChannel(channel);
+  wifiPhyHelper.Set("ChannelSettings", StringValue("{6," + std::to_string(wifiChannelWidth) + ", BAND_2_4GHZ, 0}"));
 
   WifiHelper wifiHelper;
   wifiHelper.SetStandard(WIFI_STANDARD_80211n);
