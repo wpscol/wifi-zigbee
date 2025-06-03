@@ -63,9 +63,20 @@ NS_LOG_COMPONENT_DEFINE("ZigbeeRouting");
 
 ZigbeeStackContainer zigbeeStacks;
 
+// Calculate QoS dla ZigBee
 static const uint32_t g_totalDevices = 5;
+static const uint16_t c_zigbeeBufferSize = 16;
 static uint32_t g_joinedCount = 0;
 static bool g_networkReady = false;
+
+struct QoSInfo {
+  uint32_t sentPackets = 0;
+  uint32_t recvPackets = 0;
+  double sumDelays = 0.0;
+  double sumLqi = 0.0;
+};
+static std::map<uint32_t, QoSInfo> qosMap;
+static uint32_t g_seqNo = 0;
 
 static void TraceRoute(Mac16Address src, Mac16Address dst) {
   std::cout << "\nTime " << Simulator::Now().As(Time::S) << " | "
@@ -156,7 +167,7 @@ static void NwkJoinConfirm(Ptr<ZigbeeStack> stack, NlmeJoinConfirmParams params)
     ++g_joinedCount;
     if (g_joinedCount == (g_totalDevices - 1)) {
       g_networkReady = true;
-      std::cout << Simulator::Now().As(Time::S) << " | All Zigbee nodes join the network" << std::endl;
+      std::cout << Simulator::Now().As(Time::S) << " | All Zigbee nodes joined the network" << std::endl;
     }
 
     // 3 - After dev 1 is associated, it should be started as a router
@@ -172,15 +183,24 @@ static void NwkRouteDiscoveryConfirm(Ptr<ZigbeeStack> stack, NlmeRouteDiscoveryC
   std::cout << "NlmeRouteDiscoveryConfirmStatus = " << params.m_status << "\n";
 }
 
-static void SendData(Ptr<ZigbeeStack> stackSrc, Ptr<ZigbeeStack> stackDst) {
-  // Send data from a device with stackSrc to device with stackDst.
+static void SendDataPeriod(Ptr<ZigbeeStack> stackSrc, Ptr<ZigbeeStack> stackDst, double interval) {
+  if (!g_networkReady) {
+    return;
+  }
 
-  // We do not know what network address will be assigned after the JOIN procedure
-  // but we can request the network address from stackDst (the destination device) when
-  // we intend to send data. If a route do not exist, we will search for a route
-  // before transmitting data (Mesh routing).
+  uint32_t srcNodeId = stackSrc->GetNode()->GetId();
 
-  Ptr<Packet> p = Create<Packet>(5);
+  uint8_t buf[c_zigbeeBufferSize];
+  double nowSeconds = Simulator::Now().GetSeconds();
+  memcpy(buf + 0, &srcNodeId, 4);
+  memcpy(buf + 4, &g_seqNo, 4);
+  memcpy(buf + 8, &nowSeconds, 8);
+
+  g_seqNo++;
+
+  qosMap[srcNodeId].sentPackets += 1;
+
+  Ptr<Packet> p = Create<Packet>(16);
   NldeDataRequestParams dataReqParams;
   dataReqParams.m_dstAddrMode = UCST_BCST;
   dataReqParams.m_dstAddr = stackDst->GetNwk()->GetNetworkAddress();
@@ -189,17 +209,33 @@ static void SendData(Ptr<ZigbeeStack> stackSrc, Ptr<ZigbeeStack> stackDst) {
 
   Simulator::ScheduleNow(&ZigbeeNwk::NldeDataRequest, stackSrc->GetNwk(), dataReqParams, p);
 
-  // Give a few seconds to allow the creation of the route and
-  // then print the route trace and tables from the source
-  Simulator::Schedule(Seconds(3), &TraceRoute, stackSrc->GetNwk()->GetNetworkAddress(),
-                      stackDst->GetNwk()->GetNetworkAddress());
+  // Every interval
+  Simulator::Schedule(Seconds(interval), &SendDataPeriod, stackSrc, stackDst, interval);
+}
 
-  Ptr<OutputStreamWrapper> stream = Create<OutputStreamWrapper>(&std::cout);
-  Simulator::Schedule(Seconds(4), &ZigbeeNwk::PrintNeighborTable, stackSrc->GetNwk(), stream);
-
-  Simulator::Schedule(Seconds(4), &ZigbeeNwk::PrintRoutingTable, stackSrc->GetNwk(), stream);
-
-  Simulator::Schedule(Seconds(4), &ZigbeeNwk::PrintRouteDiscoveryTable, stackSrc->GetNwk(), stream);
+static void PrintZigbeeQoS() {
+  std::cout << "\n=== QoS SUMMARY at " << Simulator::Now().GetSeconds() << "s ===\n";
+  std::cout << "NodeId | Sent | Recv |  PDR   | AvgDelay(s) | AvgLQI\n";
+  std::cout << "-----------------------------------------------------\n";
+  for (auto& kv : qosMap) {
+    uint32_t nid = kv.first;
+    auto& info = kv.second;
+    double pdr = 0.0;
+    double avgDelay = 0.0;
+    double avgLqi = 0.0;
+    if (info.sentPackets > 0) {
+      pdr = double(info.recvPackets) / double(info.sentPackets);
+    }
+    if (info.recvPackets > 0) {
+      avgDelay = info.sumDelays / double(info.recvPackets);
+      avgLqi = info.sumLqi / double(info.recvPackets);
+    }
+    std::cout << std::setw(6) << nid << " | " << std::setw(4) << info.sentPackets << " | " << std::setw(4)
+              << info.recvPackets << " | " << std::fixed << std::setprecision(2) << std::setw(5) << pdr << "  | "
+              << std::fixed << std::setprecision(3) << std::setw(9) << avgDelay << " | " << std::fixed
+              << std::setprecision(1) << std::setw(6) << avgLqi << "\n";
+  }
+  std::cout << "=====================================================\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -212,6 +248,7 @@ int main(int argc, char* argv[]) {
   uint32_t wifiChannelWidth = 20;
   uint32_t wifiPacketSize = 1472;
   uint16_t wifiPort = 5000;
+  double heartbeatInterval = 1;
   double simulationTime = 60;
   uint32_t rngRun = 1;
   uint32_t seed = 1;
@@ -442,11 +479,16 @@ int main(int argc, char* argv[]) {
     wifiTrafficApps.Add(app);
   }
 
-  // 5- Find Route and Send data
-  Simulator::Schedule(Seconds(8), &SendData, zstack0, zstack3);
+  Simulator::Schedule(Seconds(10), &SendDataPeriod, zstack0, zstack1, heartbeatInterval);
+  Simulator::Schedule(Seconds(10.2), &SendDataPeriod, zstack0, zstack2, heartbeatInterval);
+  Simulator::Schedule(Seconds(10.4), &SendDataPeriod, zstack0, zstack3, heartbeatInterval);
+  Simulator::Schedule(Seconds(10.6), &SendDataPeriod, zstack0, zstack4, heartbeatInterval);
 
-  Simulator::Stop(Seconds(20));
+  Simulator::Stop(Seconds(simulationTime));
   Simulator::Run();
+
+  PrintZigbeeQoS();
+
   Simulator::Destroy();
   return 0;
 }
