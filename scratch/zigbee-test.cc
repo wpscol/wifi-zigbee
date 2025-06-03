@@ -65,7 +65,7 @@ ZigbeeStackContainer zigbeeStacks;
 
 // Calculate QoS dla ZigBee
 static const uint32_t g_totalDevices = 5;
-static const uint16_t c_zigbeeBufferSize = 16;
+static const uint16_t c_zigbeeBufferSize = 64;
 static uint32_t g_joinedCount = 0;
 static bool g_networkReady = false;
 
@@ -112,11 +112,6 @@ static void TraceRoute(Mac16Address src, Mac16Address dst) {
     }
   }
   std::cout << "\n";
-}
-
-static void NwkDataIndication(Ptr<ZigbeeStack> stack, NldeDataIndicationParams params, Ptr<Packet> p) {
-  std::cout << Simulator::Now().As(Time::S) << " Node " << stack->GetNode()->GetId() << " | "
-            << "NsdeDataIndication:  Received packet of size " << p->GetSize() << "\n";
 }
 
 static void NwkNetworkFormationConfirm(Ptr<ZigbeeStack> stack, NlmeNetworkFormationConfirmParams params) {
@@ -188,7 +183,12 @@ static void SendDataPeriod(Ptr<ZigbeeStack> stackSrc, Ptr<ZigbeeStack> stackDst,
     return;
   }
 
+  if (c_zigbeeBufferSize < 16) {
+    NS_ABORT_MSG("c_zigbeeBufferSize must be >= 16");
+  }
+
   uint32_t srcNodeId = stackSrc->GetNode()->GetId();
+  uint32_t destNodeId = stackDst->GetNode()->GetId();
 
   uint8_t buf[c_zigbeeBufferSize];
   double nowSeconds = Simulator::Now().GetSeconds();
@@ -198,53 +198,100 @@ static void SendDataPeriod(Ptr<ZigbeeStack> stackSrc, Ptr<ZigbeeStack> stackDst,
 
   g_seqNo++;
 
-  qosMap[srcNodeId].sentPackets += 1;
+  qosMap[destNodeId].sentPackets += 1;
 
-  Ptr<Packet> p = Create<Packet>(16);
+  Ptr<Packet> p = Create<Packet>(buf, c_zigbeeBufferSize);
   NldeDataRequestParams dataReqParams;
   dataReqParams.m_dstAddrMode = UCST_BCST;
   dataReqParams.m_dstAddr = stackDst->GetNwk()->GetNetworkAddress();
   dataReqParams.m_nsduHandle = 1;
+  dataReqParams.m_nsduLength = p->GetSize();
   dataReqParams.m_discoverRoute = ENABLE_ROUTE_DISCOVERY;
 
   Simulator::ScheduleNow(&ZigbeeNwk::NldeDataRequest, stackSrc->GetNwk(), dataReqParams, p);
+
+  NS_LOG_DEBUG(Simulator::Now().GetSeconds()
+               << "s Node" << srcNodeId << " sent packet seq=" << (g_seqNo - 1) << " size=" << p->GetSize() << " bytes"
+               << " to " << dataReqParams.m_dstAddr << " totalSent =" << qosMap[srcNodeId].sentPackets);
 
   // Every interval
   Simulator::Schedule(Seconds(interval), &SendDataPeriod, stackSrc, stackDst, interval);
 }
 
+static void NwkDataIndication(Ptr<ZigbeeStack> stack, NldeDataIndicationParams params, Ptr<Packet> p) {
+  if (p->GetSize() < 16) {
+    NS_LOG_WARN("NwkDataIndication: packet too small (" << p->GetSize() << " bytes)");
+    return;
+  }
+
+  uint8_t header[16];
+  p->CopyData(header, 16);
+
+  uint32_t srcNodeId;
+  uint32_t seqNo;
+  double sendTime;
+  memcpy(&srcNodeId, header + 0, 4);
+  memcpy(&seqNo, header + 4, 4);
+  memcpy(&sendTime, header + 8, 8);
+
+  double recvTime = Simulator::Now().GetSeconds();
+  double delay = recvTime - sendTime;
+
+  double lqi = params.m_linkQuality; // 0..255
+
+  uint32_t destNodeId = stack->GetNode()->GetId();
+
+  auto& info = qosMap[destNodeId];
+  info.recvPackets += 1;
+  info.sumDelays += delay;
+  info.sumLqi += lqi;
+
+  NS_LOG_DEBUG(Simulator::Now().GetSeconds()
+               << "s Node" << stack->GetNode()->GetId() << " <- Node" << srcNodeId << " [seq=" << seqNo << "]"
+               << "  delay=" << std::fixed << std::setprecision(3) << delay << "s"
+               << "  LQI=" << lqi << "  totalRecv=" << info.recvPackets);
+}
+
 static void PrintZigbeeQoS() {
-  std::cout << "\n=== QoS SUMMARY at " << Simulator::Now().GetSeconds() << "s ===\n";
-  std::cout << "NodeId | Sent | Recv |  PDR   | AvgDelay(s) | AvgLQI\n";
-  std::cout << "-----------------------------------------------------\n";
+  double now = Simulator::Now().GetSeconds();
+
+  std::cout << "\n=== QoS SUMMARY at " << now << "s ===\n";
+  std::cout << "NodeId | SentPkts | RecvPkts |  PDR   | AvgDelay(s) | AvgLQI\n";
+  std::cout << "-------------------------------------------------------------\n";
+
   for (auto& kv : qosMap) {
     uint32_t nid = kv.first;
-    auto& info = kv.second;
+    const QoSInfo& info = kv.second;
+    uint32_t sent = info.sentPackets;
+    uint32_t recv = info.recvPackets;
+
     double pdr = 0.0;
+    if (sent > 0) {
+      pdr = double(recv) / double(sent);
+    }
+
     double avgDelay = 0.0;
     double avgLqi = 0.0;
-    if (info.sentPackets > 0) {
-      pdr = double(info.recvPackets) / double(info.sentPackets);
+    if (recv > 0) {
+      avgDelay = info.sumDelays / double(recv);
+      avgLqi = info.sumLqi / double(recv);
     }
-    if (info.recvPackets > 0) {
-      avgDelay = info.sumDelays / double(info.recvPackets);
-      avgLqi = info.sumLqi / double(info.recvPackets);
-    }
-    std::cout << std::setw(6) << nid << " | " << std::setw(4) << info.sentPackets << " | " << std::setw(4)
-              << info.recvPackets << " | " << std::fixed << std::setprecision(2) << std::setw(5) << pdr << "  | "
-              << std::fixed << std::setprecision(3) << std::setw(9) << avgDelay << " | " << std::fixed
-              << std::setprecision(1) << std::setw(6) << avgLqi << "\n";
+
+    std::cout << std::setw(6) << nid << " | " << std::setw(8) << sent << " | " << std::setw(8) << recv << " | "
+              << std::fixed << std::setprecision(2) << std::setw(5) << pdr << " | " << std::fixed
+              << std::setprecision(3) << std::setw(11) << avgDelay << " | " << std::fixed << std::setprecision(1)
+              << std::setw(6) << avgLqi << "\n";
   }
-  std::cout << "=====================================================\n";
 }
 
 int main(int argc, char* argv[]) {
   LogComponentEnableAll(LogLevel(LOG_PREFIX_TIME | LOG_PREFIX_FUNC | LOG_PREFIX_NODE));
   // Enable logs for further details
   // LogComponentEnable("ZigbeeNwk", LOG_LEVEL_DEBUG);
+  LogComponentEnable("ZigbeeRouting", LOG_LEVEL_DEBUG);
 
   // Simulation settings
-  std::string wifiDataRate = "60Mbps";
+  std::string wifiDataRate = "20Mbps";
   uint32_t wifiChannelWidth = 20;
   uint32_t wifiPacketSize = 1472;
   uint16_t wifiPort = 5000;
@@ -282,13 +329,17 @@ int main(int argc, char* argv[]) {
   dev3->GetMac()->SetExtendedAddress("00:00:00:00:00:00:00:03");
   dev4->GetMac()->SetExtendedAddress("00:00:00:00:00:00:00:04");
 
+  // Configure channel and loss models
   Ptr<SpectrumChannel> channel = CreateObject<MultiModelSpectrumChannel>();
-  Ptr<LogDistancePropagationLossModel> propModel = CreateObject<LogDistancePropagationLossModel>();
-
-  Ptr<ConstantSpeedPropagationDelayModel> delayModel = CreateObject<ConstantSpeedPropagationDelayModel>();
-
-  channel->AddPropagationLossModel(propModel);
-  channel->SetPropagationDelayModel(delayModel);
+  channel->SetPropagationDelayModel(CreateObject<ConstantSpeedPropagationDelayModel>());
+  channel->AddPropagationLossModel(CreateObject<LogDistancePropagationLossModel>());
+  {
+    auto nak = CreateObject<NakagamiPropagationLossModel>();
+    nak->SetAttribute("m0", DoubleValue(1.0));
+    nak->SetAttribute("m1", DoubleValue(3.0));
+    nak->SetAttribute("m2", DoubleValue(3.0));
+    channel->AddPropagationLossModel(nak);
+  }
 
   dev0->SetChannel(channel);
   dev1->SetChannel(channel);
@@ -479,10 +530,10 @@ int main(int argc, char* argv[]) {
     wifiTrafficApps.Add(app);
   }
 
-  Simulator::Schedule(Seconds(10), &SendDataPeriod, zstack0, zstack1, heartbeatInterval);
-  Simulator::Schedule(Seconds(10.2), &SendDataPeriod, zstack0, zstack2, heartbeatInterval);
-  Simulator::Schedule(Seconds(10.4), &SendDataPeriod, zstack0, zstack3, heartbeatInterval);
-  Simulator::Schedule(Seconds(10.6), &SendDataPeriod, zstack0, zstack4, heartbeatInterval);
+  Simulator::Schedule(Seconds(16), &SendDataPeriod, zstack0, zstack1, heartbeatInterval);
+  Simulator::Schedule(Seconds(16.2), &SendDataPeriod, zstack0, zstack2, heartbeatInterval);
+  Simulator::Schedule(Seconds(16.4), &SendDataPeriod, zstack0, zstack3, heartbeatInterval);
+  Simulator::Schedule(Seconds(16.6), &SendDataPeriod, zstack0, zstack4, heartbeatInterval);
 
   Simulator::Stop(Seconds(simulationTime));
   Simulator::Run();
