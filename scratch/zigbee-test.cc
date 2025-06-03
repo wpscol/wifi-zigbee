@@ -37,14 +37,20 @@
 
 #include "ns3/constant-position-mobility-model.h"
 #include "ns3/core-module.h"
+#include "ns3/internet-module.h"
 #include "ns3/log.h"
 #include "ns3/lr-wpan-module.h"
+#include "ns3/mobility-module.h"
+#include "ns3/network-module.h"
+#include "ns3/on-off-helper.h"
+#include "ns3/packet-sink-helper.h"
 #include "ns3/packet.h"
 #include "ns3/propagation-delay-model.h"
 #include "ns3/propagation-loss-model.h"
 #include "ns3/simulator.h"
 #include "ns3/single-model-spectrum-channel.h"
 #include "ns3/spectrum-module.h"
+#include "ns3/wifi-module.h"
 #include "ns3/zigbee-module.h"
 
 #include <iostream>
@@ -190,16 +196,30 @@ int main(int argc, char* argv[]) {
   // Enable logs for further details
   LogComponentEnable("ZigbeeNwk", LOG_LEVEL_DEBUG);
 
-  RngSeedManager::SetSeed(3);
-  RngSeedManager::SetRun(4);
+  // Simulation settings
+  std::string wifiDataRate = "60Mbps";
+  uint32_t wifiChannelWidth = 20;
+  uint32_t wifiPacketSize = 1472;
+  uint16_t wifiPort = 5000;
+  double simulationTime = 60;
+  uint32_t rngRun = 1;
+  uint32_t seed = 1;
 
-  NodeContainer nodes;
-  nodes.Create(5);
+  RngSeedManager::SetSeed(seed);
+  RngSeedManager::SetRun(rngRun);
+
+  NodeContainer wifiApNodes;
+  wifiApNodes.Create(1);
+
+  NodeContainer wifiStaNodes;
+  wifiStaNodes.Create(3);
+
+  NodeContainer zigbeeNodes;
+  zigbeeNodes.Create(5);
 
   //// Configure MAC
-
   LrWpanHelper lrWpanHelper;
-  NetDeviceContainer lrwpanDevices = lrWpanHelper.Install(nodes);
+  NetDeviceContainer lrwpanDevices = lrWpanHelper.Install(zigbeeNodes);
   Ptr<LrWpanNetDevice> dev0 = lrwpanDevices.Get(0)->GetObject<LrWpanNetDevice>();
   Ptr<LrWpanNetDevice> dev1 = lrwpanDevices.Get(1)->GetObject<LrWpanNetDevice>();
   Ptr<LrWpanNetDevice> dev2 = lrwpanDevices.Get(2)->GetObject<LrWpanNetDevice>();
@@ -228,6 +248,23 @@ int main(int argc, char* argv[]) {
   dev3->SetChannel(channel);
   dev4->SetChannel(channel);
 
+  // Configure WiFi
+  SpectrumWifiPhyHelper wifiPhyHelper;
+  wifiPhyHelper.SetChannel(channel);
+
+  WifiHelper wifiHelper;
+  wifiHelper.SetStandard(WIFI_STANDARD_80211n);
+  wifiHelper.SetRemoteStationManager("ns3::MinstrelHtWifiManager");
+
+  WifiMacHelper wifiMacHelper;
+  Ssid ssid = Ssid("wifi-coex");
+
+  wifiMacHelper.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid));
+  NetDeviceContainer staDev = wifiHelper.Install(wifiPhyHelper, wifiMacHelper, wifiStaNodes);
+
+  wifiMacHelper.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
+  NetDeviceContainer apDev = wifiHelper.Install(wifiPhyHelper, wifiMacHelper, wifiApNodes);
+
   //// Configure NWK
 
   ZigbeeHelper zigbee;
@@ -254,27 +291,50 @@ int main(int argc, char* argv[]) {
   zstack3->GetNwk()->AssignStreams(30);
   zstack4->GetNwk()->AssignStreams(40);
 
-  //// Configure Nodes Mobility
-
+  // Zigbee nodes position
   Ptr<ConstantPositionMobilityModel> dev0Mobility = CreateObject<ConstantPositionMobilityModel>();
   dev0Mobility->SetPosition(Vector(0, 0, 0));
   dev0->GetPhy()->SetMobility(dev0Mobility);
 
   Ptr<ConstantPositionMobilityModel> dev1Mobility = CreateObject<ConstantPositionMobilityModel>();
-  dev1Mobility->SetPosition(Vector(90, 0, 0));
+  dev1Mobility->SetPosition(Vector(10, 0, 0));
   dev1->GetPhy()->SetMobility(dev1Mobility);
 
   Ptr<ConstantPositionMobilityModel> dev2Mobility = CreateObject<ConstantPositionMobilityModel>();
-  dev2Mobility->SetPosition(Vector(170, 0, 0));
+  dev2Mobility->SetPosition(Vector(20, 0, 0));
   dev2->GetPhy()->SetMobility(dev2Mobility);
 
   Ptr<ConstantPositionMobilityModel> dev3Mobility = CreateObject<ConstantPositionMobilityModel>();
-  dev3Mobility->SetPosition(Vector(250, 0, 0));
+  dev3Mobility->SetPosition(Vector(30, 0, 0));
   dev3->GetPhy()->SetMobility(dev3Mobility);
 
   Ptr<ConstantPositionMobilityModel> dev4Mobility = CreateObject<ConstantPositionMobilityModel>();
-  dev4Mobility->SetPosition(Vector(90, 50, 0));
+  dev4Mobility->SetPosition(Vector(10, 10, 0));
   dev4->GetPhy()->SetMobility(dev4Mobility);
+
+  Ptr<ConstantPositionMobilityModel> apMob = CreateObject<ConstantPositionMobilityModel>();
+  apMob->SetPosition(Vector(15.0, 0.0, 0));
+  wifiApNodes.Get(0)->AggregateObject(apMob);
+  Ptr<WifiNetDevice> apWifiDev = apDev.Get(0)->GetObject<WifiNetDevice>();
+  apWifiDev->GetPhy()->SetMobility(apMob);
+
+  Ptr<ConstantPositionMobilityModel> sta0mob = CreateObject<ConstantPositionMobilityModel>();
+  sta0mob->SetPosition(Vector(0.0, 10.0, 0));
+  wifiStaNodes.Get(0)->AggregateObject(sta0mob);
+  Ptr<WifiNetDevice> sta0dev = staDev.Get(0)->GetObject<WifiNetDevice>();
+  sta0dev->GetPhy()->SetMobility(sta0mob);
+
+  Ptr<ConstantPositionMobilityModel> sta1mob = CreateObject<ConstantPositionMobilityModel>();
+  sta1mob->SetPosition(Vector(-5.0, 0.0, 0));
+  wifiStaNodes.Get(1)->AggregateObject(sta1mob);
+  Ptr<WifiNetDevice> sta1dev = staDev.Get(1)->GetObject<WifiNetDevice>();
+  sta1dev->GetPhy()->SetMobility(sta1mob);
+
+  Ptr<ConstantPositionMobilityModel> sta2mob = CreateObject<ConstantPositionMobilityModel>();
+  sta2mob->SetPosition(Vector(15, 5.0, 0));
+  wifiStaNodes.Get(2)->AggregateObject(sta2mob);
+  Ptr<WifiNetDevice> sta2dev = staDev.Get(2)->GetObject<WifiNetDevice>();
+  sta2dev->GetPhy()->SetMobility(sta2mob);
 
   // NWK callbacks hooks
   // These hooks are usually directly connected to the APS layer
@@ -343,8 +403,34 @@ int main(int argc, char* argv[]) {
   Simulator::ScheduleWithContext(zstack4->GetNode()->GetId(), Seconds(6), &ZigbeeNwk::NlmeNetworkDiscoveryRequest,
                                  zstack4->GetNwk(), netDiscParams4);
 
-  // 5- Find Route and Send data
+  // Install WiFi Stack
+  // WiFi IP configuration
+  InternetStackHelper inet;
+  inet.Install(wifiApNodes);
+  inet.Install(wifiStaNodes);
+  Ipv4AddressHelper ipv4;
+  ipv4.SetBase("10.0.0.0", "255.255.255.0");
+  ipv4.Assign(NetDeviceContainer(apDev, staDev));
 
+  // Wifi sink
+  PacketSinkHelper wifiSink("ns3::UdpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), wifiPort));
+  ApplicationContainer wifiSinkApp = wifiSink.Install(wifiApNodes.Get(0));
+  wifiSinkApp.Start(Seconds(0));
+  wifiSinkApp.Stop(Seconds(simulationTime));
+
+  // Wifi traffic app
+  ApplicationContainer wifiTrafficApps;
+  OnOffHelper wifiTrafficApp("ns3::UdpSocketFactory", InetSocketAddress("10.0.0.1", wifiPort));
+  wifiTrafficApp.SetAttribute("DataRate", DataRateValue(wifiDataRate));
+  wifiTrafficApp.SetAttribute("PacketSize", UintegerValue(wifiPacketSize));
+  for (uint32_t i = 0; i < wifiStaNodes.GetN(); i++) {
+    ApplicationContainer app = wifiTrafficApp.Install(wifiStaNodes.Get(i));
+    app.Start(Seconds(16));
+    app.Stop(Seconds(16 + simulationTime));
+    wifiTrafficApps.Add(app);
+  }
+
+  // 5- Find Route and Send data
   Simulator::Schedule(Seconds(8), &SendData, zstack0, zstack3);
 
   Simulator::Stop(Seconds(20));

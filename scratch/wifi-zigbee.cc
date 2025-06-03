@@ -1,19 +1,14 @@
 #include "ns3/applications-module.h"
-#include "ns3/arp-cache.h"
 #include "ns3/core-module.h"
 #include "ns3/flow-monitor-module.h"
 #include "ns3/inet-socket-address.h"
 #include "ns3/internet-module.h"
-#include "ns3/ipv4-global-routing-helper.h"
-#include "ns3/ipv4-l3-protocol.h"
 #include "ns3/log.h"
 #include "ns3/lr-wpan-module.h"
 #include "ns3/mobility-module.h"
 #include "ns3/network-module.h"
 #include "ns3/on-off-helper.h"
 #include "ns3/packet-sink-helper.h"
-#include "ns3/single-model-spectrum-channel.h"
-#include "ns3/sixlowpan-helper.h"
 #include "ns3/spectrum-module.h"
 #include "ns3/wifi-module.h"
 #include "ns3/zigbee-module.h"
@@ -32,11 +27,9 @@ static void NwkJoinConfirm(Ptr<ZigbeeStack> stack, NlmeJoinConfirmParams params)
 static void NwkRouteDiscoveryConfirm(Ptr<ZigbeeStack> stack, NlmeRouteDiscoveryConfirmParams params);
 static void SendData(Ptr<ZigbeeStack> stackSrc, Ptr<ZigbeeStack> stackDst);
 static void TraceRoute(Mac16Address src, Mac16Address dst);
+static void PrintNodePositions(const std::string& tag, const NodeContainer& nodes);
 
 ZigbeeStackContainer zigbeeStacks;
-
-void ReportWifiStats(Ptr<FlowMonitor> monitor, Ptr<Ipv4FlowClassifier> classifier, uint16_t wifiPort = 5000);
-void PrintNodePositions(const std::string& tag, const NodeContainer& nodes);
 
 NS_LOG_COMPONENT_DEFINE("wifi-zigbee-coex");
 
@@ -60,9 +53,8 @@ int main(int argc, char* argv[]) {
   // Simulation configuration
   double simulationTime = 60;
 
-  // Get configura5.0n
+  // Get configuration
   CommandLine cmd;
-  cmd.AddValue("wifiStandard", "Choose standard to use: 80211n | 80211ac | 80211ax ", wifiStandard);
   cmd.AddValue("wifiDataRate", "Data rate for Wifi devices", wifiDataRate);
   cmd.AddValue("wifiPacketSize", "Wifi packet size", wifiPacketSize);
   cmd.AddValue("simulationTime", "How long simulation should run (s)", simulationTime);
@@ -71,23 +63,9 @@ int main(int argc, char* argv[]) {
 
   // Print configuration
   NS_LOG_INFO("wifi-zigbee-coex - configuration:");
-  NS_LOG_INFO("> wifiStandard: " << wifiStandard);
   NS_LOG_INFO("> wifiDataRate: " << wifiDataRate);
   NS_LOG_INFO("> simulationTime: " << simulationTime);
   NS_LOG_INFO("> nZigbee: " << nZigbee);
-
-  // Configure channel and lss models
-  Ptr<SpectrumChannel> commonChannel = CreateObject<MultiModelSpectrumChannel>();
-  commonChannel->SetPropagationDelayModel(CreateObject<ConstantSpeedPropagationDelayModel>());
-  commonChannel->AddPropagationLossModel(CreateObject<LogDistancePropagationLossModel>());
-  {
-    auto nak = CreateObject<NakagamiPropagationLossModel>();
-    nak->SetAttribute("m0", DoubleValue(1.0));
-    nak->SetAttribute("m1", DoubleValue(3.0));
-    nak->SetAttribute("m2", DoubleValue(3.0));
-    commonChannel->AddPropagationLossModel(nak);
-  }
-  NS_LOG_DEBUG("Successfuly configured common channel");
 
   // Single AP
   NodeContainer wifiApNodes;
@@ -146,28 +124,6 @@ int main(int argc, char* argv[]) {
   PrintNodePositions("STA", wifiStaNodes);
   PrintNodePositions("ZB", zigbeeNodes);
 
-  // Configure channel
-  SpectrumWifiPhyHelper wifiPhy;
-  wifiPhy.SetChannel(commonChannel);
-
-  // Set WiFi standard
-  WifiHelper wifi;
-  wifi.SetStandard(WIFI_STANDARD_80211n);
-  wifi.SetRemoteStationManager("ns3::MinstrelHtWifiManager");
-  NS_LOG_DEBUG("Configured Wifi Phy");
-
-  // Wifi configuration
-  WifiMacHelper mac;
-  Ssid ssid = Ssid("wifi-coex");
-
-  mac.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid));
-  NetDeviceContainer staDev = wifi.Install(wifiPhy, mac, wifiStaNodes);
-
-  mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
-  NetDeviceContainer apDev = wifi.Install(wifiPhy, mac, wifiApNodes);
-
-  NS_LOG_DEBUG("Configured WiFi stack");
-
   // LR-WPAN configuration
   LrWpanHelper lrWpanHelper;
   NetDeviceContainer lrwpanDevices = lrWpanHelper.Install(zigbeeNodes);
@@ -182,10 +138,48 @@ int main(int argc, char* argv[]) {
       Mac64Address addr = Mac64Address::Allocate();
       dev->GetMac()->SetExtendedAddress(addr);
     }
-    // Set channel Zigbee node
-    dev->SetChannel(commonChannel);
   }
   NS_LOG_DEBUG("Configured MAC addressing on LR-WPAN stack");
+
+  // Configure channel and loss models
+  Ptr<SpectrumChannel> commonChannel = CreateObject<MultiModelSpectrumChannel>();
+  commonChannel->SetPropagationDelayModel(CreateObject<ConstantSpeedPropagationDelayModel>());
+  commonChannel->AddPropagationLossModel(CreateObject<LogDistancePropagationLossModel>());
+  {
+    auto nak = CreateObject<NakagamiPropagationLossModel>();
+    nak->SetAttribute("m0", DoubleValue(1.0));
+    nak->SetAttribute("m1", DoubleValue(3.0));
+    nak->SetAttribute("m2", DoubleValue(3.0));
+    commonChannel->AddPropagationLossModel(nak);
+  }
+  NS_LOG_DEBUG("Successfuly configured common channel");
+
+  // Configure Zigbee channel
+  for (uint32_t i = 0; i < zigbeeNodes.GetN(); i++) {
+    Ptr<LrWpanNetDevice> dev = lrwpanDevices.Get(i)->GetObject<LrWpanNetDevice>();
+    dev->SetChannel(commonChannel);
+  }
+
+  // Configure WiFi channel
+  SpectrumWifiPhyHelper wifiPhy;
+  wifiPhy.SetChannel(commonChannel);
+
+  // Set WiFi standard
+  WifiHelper wifi;
+  wifi.SetStandard(WIFI_STANDARD_80211n);
+  wifi.SetRemoteStationManager("ns3::MinstrelHtWifiManager");
+
+  // Wifi configuration
+  WifiMacHelper mac;
+  Ssid ssid = Ssid("wifi-coex");
+
+  mac.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid));
+  NetDeviceContainer staDev = wifi.Install(wifiPhy, mac, wifiStaNodes);
+
+  mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
+  NetDeviceContainer apDev = wifi.Install(wifiPhy, mac, wifiApNodes);
+
+  NS_LOG_DEBUG("Configured WiFi stack");
 
   // Install Zigbee stack
   ZigbeeHelper zigbeeHelper;
@@ -281,18 +275,14 @@ int main(int argc, char* argv[]) {
   auto t0 = std::chrono::steady_clock::now();
   Simulator::Run();
   auto t1 = std::chrono::steady_clock::now();
-
   auto finalTime = std::chrono::duration_cast<std::chrono::seconds>(t1 - t0).count();
   NS_LOG_INFO("Simulation finished in " << finalTime << " s");
-
-  Ptr<Ipv4FlowClassifier> ipv4Classifier = DynamicCast<Ipv4FlowClassifier>(fm4.GetClassifier());
-  ReportWifiStats(monitor4, ipv4Classifier, wifiPort);
 
   Simulator::Destroy();
   return 0;
 }
 
-void PrintNodePositions(const std::string& tag, const NodeContainer& nodes) {
+static void PrintNodePositions(const std::string& tag, const NodeContainer& nodes) {
   for (uint32_t i = 0; i < nodes.GetN(); ++i) {
     Ptr<MobilityModel> mm = nodes.Get(i)->GetObject<MobilityModel>();
     Vector pos = mm->GetPosition();
@@ -301,124 +291,9 @@ void PrintNodePositions(const std::string& tag, const NodeContainer& nodes) {
   }
 }
 
-void ReportWifiStats(Ptr<FlowMonitor> monitor, Ptr<Ipv4FlowClassifier> classifier, uint16_t wifiPort) {
-  monitor->CheckForLostPackets();
-  std::map<FlowId, FlowMonitor::FlowStats> stats = monitor->GetFlowStats();
-
-  NS_LOG_INFO("===== WiFi Flow Statistics (port = " << wifiPort << ") =====");
-  for (const auto& flowPair : stats) {
-    FlowId flowId = flowPair.first;
-    const FlowMonitor::FlowStats& fstats = flowPair.second;
-
-    Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(flowId);
-    if (t.destinationPort != wifiPort) {
-      continue;
-    }
-
-    double tFirstTx = fstats.timeFirstTxPacket.GetSeconds();
-    double tLastRx = fstats.timeLastRxPacket.GetSeconds();
-    double duration = (tLastRx - tFirstTx) > 0.0 ? (tLastRx - tFirstTx) : 1e-9;
-    double throughputMbps = (fstats.rxBytes * 8.0) / (duration * 1e6);
-
-    NS_LOG_INFO("Flow ID: " << flowId);
-    NS_LOG_INFO("    Source      = " << t.sourceAddress << "    Destination = " << t.destinationAddress);
-    NS_LOG_INFO("    Tx Packets    = " << fstats.txPackets << "    Rx Packets    = " << fstats.rxPackets);
-    NS_LOG_INFO("    Lost Packets  = " << fstats.lostPackets);
-    NS_LOG_INFO("    Throughput    = " << throughputMbps << " Mbps");
-  }
-  NS_LOG_INFO("===============================================");
-}
-
-static void NwkDataIndication(Ptr<ZigbeeStack> stack, NldeDataIndicationParams params, Ptr<Packet> p) {
-  std::cout << Simulator::Now().As(Time::S) << " Node " << stack->GetNode()->GetId() << " | "
-            << "NsdeDataIndication:  Received packet of size " << p->GetSize() << "\n";
-}
-
-static void NwkNetworkFormationConfirm(Ptr<ZigbeeStack> stack, NlmeNetworkFormationConfirmParams params) {
-  std::cout << "NlmeNetworkFormationConfirmStatus = " << params.m_status << "\n";
-}
-
-static void NwkNetworkDiscoveryConfirm(Ptr<ZigbeeStack> stack, NlmeNetworkDiscoveryConfirmParams params) {
-  if (params.m_status == NwkStatus::SUCCESS) {
-    std::cout << " Network discovery confirm Received. Networks found (" << params.m_netDescList.size() << "):\n";
-
-    for (const auto& netDescriptor : params.m_netDescList) {
-      std::cout << " ExtPanID: 0x" << std::hex << netDescriptor.m_extPanId << "\n"
-                << std::dec << " CH:  " << static_cast<uint32_t>(netDescriptor.m_logCh) << "\n"
-                << std::hex << " Pan ID: 0x" << netDescriptor.m_panId << "\n"
-                << " Stack profile: " << std::dec << static_cast<uint32_t>(netDescriptor.m_stackProfile) << "\n"
-                << "--------------------\n";
-    }
-
-    NlmeJoinRequestParams joinParams;
-
-    zigbee::CapabilityInformation capaInfo;
-    capaInfo.SetDeviceType(ROUTER);
-    capaInfo.SetAllocateAddrOn(true);
-
-    joinParams.m_rejoinNetwork = zigbee::JoiningMethod::ASSOCIATION;
-    joinParams.m_capabilityInfo = capaInfo.GetCapability();
-    joinParams.m_extendedPanId = params.m_netDescList[0].m_extPanId;
-
-    Simulator::ScheduleNow(&ZigbeeNwk::NlmeJoinRequest, stack->GetNwk(), joinParams);
-  } else {
-    NS_ABORT_MSG("Unable to discover networks | status: " << params.m_status);
-  }
-}
-
-static void NwkJoinConfirm(Ptr<ZigbeeStack> stack, NlmeJoinConfirmParams params) {
-  if (params.m_status == NwkStatus::SUCCESS) {
-    std::cout << Simulator::Now().As(Time::S) << " Node " << stack->GetNode()->GetId() << " | "
-              << " The device joined the network SUCCESSFULLY with short address " << std::hex
-              << params.m_networkAddress << " on the Extended PAN Id: " << std::hex << params.m_extendedPanId << "\n"
-              << std::dec;
-
-    // 3 - After dev 1 is associated, it should be started as a router
-    //     (i.e. it becomes able to accept request from other devices to join the network)
-    NlmeStartRouterRequestParams startRouterParams;
-    Simulator::ScheduleNow(&ZigbeeNwk::NlmeStartRouterRequest, stack->GetNwk(), startRouterParams);
-  } else {
-    std::cout << " The device FAILED to join the network with status " << params.m_status << "\n";
-  }
-}
-
-static void NwkRouteDiscoveryConfirm(Ptr<ZigbeeStack> stack, NlmeRouteDiscoveryConfirmParams params) {
-  std::cout << "NlmeRouteDiscoveryConfirmStatus = " << params.m_status << "\n";
-}
-
-static void SendData(Ptr<ZigbeeStack> stackSrc, Ptr<ZigbeeStack> stackDst) {
-  // Send data from a device with stackSrc to device with stackDst.
-
-  // We do not know what network address will be assigned after the JOIN procedure
-  // but we can request the network address from stackDst (the destination device) when
-  // we intend to send data. If a route do not exist, we will search for a route
-  // before transmitting data (Mesh routing).
-
-  Ptr<Packet> p = Create<Packet>(5);
-  NldeDataRequestParams dataReqParams;
-  dataReqParams.m_dstAddrMode = UCST_BCST;
-  dataReqParams.m_dstAddr = stackDst->GetNwk()->GetNetworkAddress();
-  dataReqParams.m_nsduHandle = 1;
-  dataReqParams.m_discoverRoute = ENABLE_ROUTE_DISCOVERY;
-
-  Simulator::ScheduleNow(&ZigbeeNwk::NldeDataRequest, stackSrc->GetNwk(), dataReqParams, p);
-
-  // Give a few seconds to allow the creation of the route and
-  // then print the route trace and tables from the source
-  Simulator::Schedule(Seconds(3), &TraceRoute, stackSrc->GetNwk()->GetNetworkAddress(),
-                      stackDst->GetNwk()->GetNetworkAddress());
-
-  Ptr<OutputStreamWrapper> stream = Create<OutputStreamWrapper>(&std::cout);
-  Simulator::Schedule(Seconds(4), &ZigbeeNwk::PrintNeighborTable, stackSrc->GetNwk(), stream);
-
-  Simulator::Schedule(Seconds(4), &ZigbeeNwk::PrintRoutingTable, stackSrc->GetNwk(), stream);
-
-  Simulator::Schedule(Seconds(4), &ZigbeeNwk::PrintRouteDiscoveryTable, stackSrc->GetNwk(), stream);
-}
-
 static void TraceRoute(Mac16Address src, Mac16Address dst) {
-  std::cout << "\nTime " << Simulator::Now().As(Time::S) << " | "
-            << "Traceroute to destination [" << dst << "]:\n";
+  std::cout << "\n";
+  std::cout << "Traceroute to destination [" << dst << "] (Time: " << Simulator::Now().As(Time::S) << "):\n";
   Mac16Address target = src;
   uint32_t count = 1;
   while (target != Mac16Address("FF:FF") && target != dst) {
@@ -450,4 +325,87 @@ static void TraceRoute(Mac16Address src, Mac16Address dst) {
     }
   }
   std::cout << "\n";
+}
+
+static void CreateManyToOneRoutes(Ptr<ZigbeeStack> zigbeeStackConcentrator, Ptr<ZigbeeStack> zigbeeStackSrc) {
+  // Generate all the routes to the concentrator device
+  NlmeRouteDiscoveryRequestParams routeDiscParams;
+  routeDiscParams.m_dstAddrMode = NO_ADDRESS;
+  Simulator::ScheduleNow(&ZigbeeNwk::NlmeRouteDiscoveryRequest, zigbeeStackConcentrator->GetNwk(), routeDiscParams);
+
+  // Give a few seconds to allow the creation of the route and
+  // then print the route trace and tables from the source
+  Simulator::Schedule(Seconds(3), &TraceRoute, zigbeeStackSrc->GetNwk()->GetNetworkAddress(),
+                      zigbeeStackConcentrator->GetNwk()->GetNetworkAddress());
+
+  // Print the content of the source device tables (Neighbor, Discovery, Routing)
+  Ptr<OutputStreamWrapper> stream = Create<OutputStreamWrapper>(&std::cout);
+  Simulator::Schedule(Seconds(4), &ZigbeeNwk::PrintNeighborTable, zigbeeStackSrc->GetNwk(), stream);
+
+  Simulator::Schedule(Seconds(4), &ZigbeeNwk::PrintRoutingTable, zigbeeStackSrc->GetNwk(), stream);
+
+  Simulator::Schedule(Seconds(4), &ZigbeeNwk::PrintRouteDiscoveryTable, zigbeeStackSrc->GetNwk(), stream);
+}
+
+static void NwkDataIndication(Ptr<ZigbeeStack> stack, NldeDataIndicationParams params, Ptr<Packet> p) {
+  std::cout << "Received packet of size " << p->GetSize() << "\n";
+}
+
+static void NwkNetworkFormationConfirm(Ptr<ZigbeeStack> stack, NlmeNetworkFormationConfirmParams params) {
+  std::cout << "NlmeNetworkFormationConfirmStatus = " << params.m_status << "\n";
+}
+
+static void NwkNetworkDiscoveryConfirm(Ptr<ZigbeeStack> stack, NlmeNetworkDiscoveryConfirmParams params) {
+  // See Zigbee Specification r22.1.0, 3.6.1.4.1
+  // This method implements a simplistic version of the method implemented
+  // in a zigbee APL layer. In this layer a candidate Extended PAN Id must
+  // be selected and a NLME-JOIN.request must be issued.
+
+  if (params.m_status == NwkStatus::SUCCESS) {
+    std::cout << "    Network discovery confirm Received. Networks found "
+              << "(" << params.m_netDescList.size() << ")\n";
+
+    for (const auto& netDescriptor : params.m_netDescList) {
+      std::cout << "      ExtPanID: 0x" << std::hex << netDescriptor.m_extPanId << std::dec << "\n"
+                << "      CH:  " << static_cast<uint32_t>(netDescriptor.m_logCh) << std::hex << "\n"
+                << "      Pan Id: 0x" << netDescriptor.m_panId << std::hex << "\n"
+                << "      stackprofile: " << std::dec << static_cast<uint32_t>(netDescriptor.m_stackProfile) << "\n"
+                << "      ----------------\n ";
+    }
+
+    NlmeJoinRequestParams joinParams;
+
+    zigbee::CapabilityInformation capaInfo;
+    capaInfo.SetDeviceType(ROUTER);
+    capaInfo.SetAllocateAddrOn(true);
+
+    joinParams.m_rejoinNetwork = zigbee::JoiningMethod::ASSOCIATION;
+    joinParams.m_capabilityInfo = capaInfo.GetCapability();
+    joinParams.m_extendedPanId = params.m_netDescList[0].m_extPanId;
+
+    Simulator::ScheduleNow(&ZigbeeNwk::NlmeJoinRequest, stack->GetNwk(), joinParams);
+  } else {
+    std::cout << " WARNING: Unable to discover networks | status: " << params.m_status << "\n";
+  }
+}
+
+static void NwkJoinConfirm(Ptr<ZigbeeStack> stack, NlmeJoinConfirmParams params) {
+  if (params.m_status == NwkStatus::SUCCESS) {
+    std::cout << Simulator::Now().As(Time::S) << " The device joined the network SUCCESSFULLY with short address ["
+              << std::hex << params.m_networkAddress << "] on the Extended PAN Id: " << std::hex
+              << params.m_extendedPanId << "\n"
+              << std::dec;
+
+    // 3 - After dev  is associated, it should be started as a router
+    //     (i.e. it becomes able to accept request from other devices to join the network)
+    NlmeStartRouterRequestParams startRouterParams;
+    Simulator::ScheduleNow(&ZigbeeNwk::NlmeStartRouterRequest, stack->GetNwk(), startRouterParams);
+  } else {
+    std::cout << Simulator::Now().As(Time::S) << " The device FAILED to join the network with status "
+              << params.m_status << "\n";
+  }
+}
+
+static void NwkRouteDiscoveryConfirm(Ptr<ZigbeeStack> stack, NlmeRouteDiscoveryConfirmParams params) {
+  std::cout << "NlmeRouteDiscoveryConfirmStatus = " << params.m_status << "\n";
 }
