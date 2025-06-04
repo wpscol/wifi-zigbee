@@ -82,7 +82,7 @@ static std::map<uint32_t, std::map<uint32_t, std::set<uint32_t>>> receivedTracke
 static uint32_t g_seqNo = 0;
 
 static void NwkNetworkFormationConfirm(Ptr<ZigbeeStack> stack, NlmeNetworkFormationConfirmParams params) {
-  std::cout << "NlmeNetworkFormationConfirmStatus = " << params.m_status << "\n";
+  NS_LOG_INFO("NlmeNetworkFormationConfirmStatus = " << params.m_status << "\n");
 }
 
 static void NwkNetworkDiscoveryConfirm(Ptr<ZigbeeStack> stack, NlmeNetworkDiscoveryConfirmParams params) {
@@ -92,14 +92,15 @@ static void NwkNetworkDiscoveryConfirm(Ptr<ZigbeeStack> stack, NlmeNetworkDiscov
   // be selected and a NLME-JOIN.request must be issued.
 
   if (params.m_status == NwkStatus::SUCCESS) {
-    std::cout << " Network discovery confirm Received. Networks found (" << params.m_netDescList.size() << "):\n";
+    NS_LOG_INFO(" Network discovery confirm Received. Networks found (" << params.m_netDescList.size() << "):\n");
 
     for (const auto& netDescriptor : params.m_netDescList) {
-      std::cout << " ExtPanID: 0x" << std::hex << netDescriptor.m_extPanId << "\n"
-                << std::dec << " CH:  " << static_cast<uint32_t>(netDescriptor.m_logCh) << "\n"
-                << std::hex << " Pan ID: 0x" << netDescriptor.m_panId << "\n"
-                << " Stack profile: " << std::dec << static_cast<uint32_t>(netDescriptor.m_stackProfile) << "\n"
-                << "--------------------\n";
+      NS_LOG_INFO(" ExtPanID: 0x" << std::hex << netDescriptor.m_extPanId << "\n"
+                                  << std::dec << " CH:  " << static_cast<uint32_t>(netDescriptor.m_logCh) << "\n"
+                                  << std::hex << " Pan ID: 0x" << netDescriptor.m_panId << "\n"
+                                  << " Stack profile: " << std::dec
+                                  << static_cast<uint32_t>(netDescriptor.m_stackProfile) << "\n"
+                                  << "--------------------");
     }
 
     NlmeJoinRequestParams joinParams;
@@ -120,16 +121,17 @@ static void NwkNetworkDiscoveryConfirm(Ptr<ZigbeeStack> stack, NlmeNetworkDiscov
 
 static void NwkJoinConfirm(Ptr<ZigbeeStack> stack, NlmeJoinConfirmParams params) {
   if (params.m_status == NwkStatus::SUCCESS) {
-    std::cout << Simulator::Now().As(Time::S) << " Node " << stack->GetNode()->GetId() << " | "
-              << " The device joined the network SUCCESSFULLY with short address " << std::hex
-              << params.m_networkAddress << " on the Extended PAN Id: " << std::hex << params.m_extendedPanId << "\n"
-              << std::dec;
+    NS_LOG_INFO(Simulator::Now().As(Time::S)
+                << " Node " << stack->GetNode()->GetId() << " | "
+                << " The device joined the network SUCCESSFULLY with short address " << std::hex
+                << params.m_networkAddress << " on the Extended PAN Id: " << std::hex << params.m_extendedPanId << "\n"
+                << std::dec);
 
     // Iterate joined devices
     ++g_joinedCount;
     if (g_joinedCount == (g_totalDevices - 1)) {
       g_networkReady = true;
-      std::cout << Simulator::Now().As(Time::S) << " | All Zigbee nodes joined the network" << std::endl;
+      NS_LOG_INFO(Simulator::Now().As(Time::S) << " | All Zigbee nodes joined the network" << std::endl);
     }
 
     // 3 - After dev 1 is associated, it should be started as a router
@@ -137,12 +139,12 @@ static void NwkJoinConfirm(Ptr<ZigbeeStack> stack, NlmeJoinConfirmParams params)
     NlmeStartRouterRequestParams startRouterParams;
     Simulator::ScheduleNow(&ZigbeeNwk::NlmeStartRouterRequest, stack->GetNwk(), startRouterParams);
   } else {
-    std::cout << " The device FAILED to join the network with status " << params.m_status << "\n";
+    NS_LOG_ERROR(" The device FAILED to join the network with status " << params.m_status << "\n");
   }
 }
 
 static void NwkRouteDiscoveryConfirm(Ptr<ZigbeeStack> stack, NlmeRouteDiscoveryConfirmParams params) {
-  std::cout << "NlmeRouteDiscoveryConfirmStatus = " << params.m_status << "\n";
+  NS_LOG_INFO("NlmeRouteDiscoveryConfirmStatus = " << params.m_status << "\n");
 }
 
 static void SendDataPeriod(Ptr<ZigbeeStack> stackSrc, Ptr<ZigbeeStack> stackDst, double interval) {
@@ -240,10 +242,10 @@ static void PrintWifiFlowStats(FlowMonitorHelper& flowHelper, Ptr<FlowMonitor> f
   std::map<FlowId, FlowMonitor::FlowStats> stats = flowMonitor->GetFlowStats();
 
   // 4) Print header, now including PDR
-  std::cout << "\n=== WiFi FlowMonitor Statistics at " << Simulator::Now().GetSeconds() << "s ===\n";
-  std::cout
-      << "FlowID | Source Addr       | Dest Addr         | TxPkts | RxPkts | PDR   | LostPkts | Throughput(Kbps)\n";
-  std::cout << "-----------------------------------------------------------------------------------------------\n";
+  NS_LOG_UNCOND("=== WiFi FlowMonitor Statistics at " << Simulator::Now().GetSeconds() << "s ===");
+  NS_LOG_UNCOND(
+      "FlowID | Source Addr       | Dest Addr         | TxPkts | RxPkts | PDR   | LostPkts | Throughput(Kbps)");
+  NS_LOG_UNCOND("-----------------------------------------------------------------------------------------------");
 
   // 5) Loop over each flow and print metrics
   for (auto& flow : stats) {
@@ -270,22 +272,21 @@ static void PrintWifiFlowStats(FlowMonitorHelper& flowHelper, Ptr<FlowMonitor> f
       throughput = (fs.rxBytes * 8.0) / (1000.0 * duration);
     }
 
-    // Print one line per flow with the added PDR column
-    std::cout << std::setw(6) << flowId << " | " << std::setw(17) << t.sourceAddress << " | " << std::setw(17)
-              << t.destinationAddress << " | " << std::setw(6) << txPackets << " | " << std::setw(6) << rxPackets
-              << " | " << std::fixed << std::setprecision(2) << std::setw(5) << pdr << " | " << std::setw(8)
-              << lostPackets << " | " << std::fixed << std::setprecision(2) << std::setw(14) << throughput << "\n";
+    NS_LOG_UNCOND(std::setw(6) << flowId << " | " << std::setw(17) << t.sourceAddress << " | " << std::setw(17)
+                               << t.destinationAddress << " | " << std::setw(6) << txPackets << " | " << std::setw(6)
+                               << rxPackets << " | " << std::fixed << std::setprecision(2) << std::setw(5) << pdr
+                               << " | " << std::setw(8) << lostPackets << " | " << std::fixed << std::setprecision(2)
+                               << std::setw(14) << throughput);
   }
-
-  std::cout << "-----------------------------------------------------------------------------------------------\n\n";
+  NS_LOG_UNCOND("-----------------------------------------------------------------------------------------------");
 }
 
 static void PrintZigbeeQoS() {
   double now = Simulator::Now().GetSeconds();
 
-  std::cout << "\n=== ZigBee QoS SUMMARY at " << now << "s ===\n";
-  std::cout << "NodeId | SentPkts | RecvPkts |  PDR   | AvgDelay(s) | AvgLQI\n";
-  std::cout << "-------------------------------------------------------------\n";
+  NS_LOG_UNCOND("=== ZigBee QoS SUMMARY at " << now << "s ===");
+  NS_LOG_UNCOND("NodeId | SentPkts | RecvPkts |  PDR   | AvgDelay(s) | AvgLQI");
+  NS_LOG_UNCOND("-------------------------------------------------------------");
 
   for (auto& kv : qosMap) {
     uint32_t nid = kv.first;
@@ -305,10 +306,10 @@ static void PrintZigbeeQoS() {
       avgLqi = info.sumLqi / double(recv);
     }
 
-    std::cout << std::setw(6) << nid << " | " << std::setw(8) << sent << " | " << std::setw(8) << recv << " | "
-              << std::fixed << std::setprecision(2) << std::setw(5) << pdr << " | " << std::fixed
-              << std::setprecision(3) << std::setw(11) << avgDelay << " | " << std::fixed << std::setprecision(1)
-              << std::setw(6) << avgLqi << "\n";
+    NS_LOG_UNCOND(std::setw(6) << nid << " | " << std::setw(8) << sent << " | " << std::setw(8) << recv << " | "
+                               << std::fixed << std::setprecision(2) << std::setw(5) << pdr << " | " << std::fixed
+                               << std::setprecision(3) << std::setw(11) << avgDelay << " | " << std::fixed
+                               << std::setprecision(1) << std::setw(6) << avgLqi);
   }
 }
 
@@ -316,7 +317,6 @@ int main(int argc, char* argv[]) {
   LogComponentEnableAll(LogLevel(LOG_PREFIX_TIME | LOG_PREFIX_FUNC | LOG_PREFIX_NODE));
   // Enable logs for further details
   // LogComponentEnable("ZigbeeNwk", LOG_LEVEL_DEBUG);
-  LogComponentEnable("ZigbeeRouting", LOG_LEVEL_DEBUG);
 
   // Simulation settings
   std::string wifiDataRate = "160Mbps";
@@ -327,6 +327,60 @@ int main(int argc, char* argv[]) {
   double simulationTime = 60;
   uint32_t rngRun = 1;
   uint32_t seed = 1;
+  uint32_t logLevel = 3;
+
+  CommandLine cmd;
+  cmd.AddValue("logLevel", "0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=LOGIC", logLevel);
+  cmd.AddValue("wifiDataRate", "DataRate for WiFi (e.g. \"160Mbps\")", wifiDataRate);
+  cmd.AddValue("wifiChannelWidth", "WiFi channel width (MHz)", wifiChannelWidth);
+  cmd.AddValue("wifiPacketSize", "Size of each heartbeat packet (bytes)", wifiPacketSize);
+  cmd.AddValue("heartbeatInterval", "Interval between heartbeats (s)", heartbeatInterval);
+  cmd.AddValue("simulationTime", "Total simulation time (seconds)", simulationTime);
+  cmd.AddValue("rngRun", "RNG run number (for SetRun)", rngRun);
+  cmd.AddValue("seed", "RNG seed (for SetSeed)", seed);
+  cmd.Parse(argc, argv);
+
+  NS_LOG_UNCOND("\n============================================================");
+  NS_LOG_UNCOND(" Simulation parameters:");
+  NS_LOG_UNCOND("   wifiDataRate      = " << wifiDataRate);
+  NS_LOG_UNCOND("   wifiChannelWidth  = " << wifiChannelWidth);
+  NS_LOG_UNCOND("   wifiPacketSize    = " << wifiPacketSize);
+  NS_LOG_UNCOND("   heartbeatInterval = " << heartbeatInterval);
+  NS_LOG_UNCOND("   simulationTime    = " << simulationTime);
+  NS_LOG_UNCOND("   rngRun            = " << rngRun);
+  NS_LOG_UNCOND("   seed              = " << seed);
+  NS_LOG_UNCOND("   logLevel          = " << logLevel);
+  NS_LOG_UNCOND("============================================================");
+
+  LogLevel ns3LogLevel = LOG_LEVEL_ERROR;
+  switch (logLevel) {
+  case 0:
+    ns3LogLevel = LOG_LEVEL_ERROR;
+    break;
+  case 1:
+    ns3LogLevel = LOG_LEVEL_WARN;
+    break;
+  case 2:
+    ns3LogLevel = LOG_LEVEL_INFO;
+    break;
+  case 3:
+    ns3LogLevel = LOG_LEVEL_DEBUG;
+    break;
+  case 4:
+    ns3LogLevel = LOG_LEVEL_LOGIC;
+    break;
+  default:
+    std::cerr << "Invalid logLevel “" << logLevel << "”. Using INFO (3) by default.\n";
+    ns3LogLevel = LOG_LEVEL_INFO;
+    break;
+  }
+  LogComponentEnable("ZigbeeNwk", ns3LogLevel);
+  LogComponentEnable("ZigbeeRouting", ns3LogLevel);
+  // LogComponentEnable("WifiPhy", ns3LogLevel);
+  // LogComponentEnable("WifiMac", ns3LogLevel);
+  // LogComponentEnable("ConstantRateWifiManager", ns3LogLevel);
+  // LogComponentEnable("UdpServer", ns3LogLevel);
+  // LogComponentEnable("UdpSocketImpl", ns3LogLevel);
 
   RngSeedManager::SetSeed(seed);
   RngSeedManager::SetRun(rngRun);
