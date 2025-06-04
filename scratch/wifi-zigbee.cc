@@ -78,6 +78,7 @@ struct QoSInfo {
   double sumLqi = 0.0;
 };
 static std::map<uint32_t, QoSInfo> qosMap;
+static std::map<uint32_t, std::map<uint32_t, std::set<uint32_t>>> receivedTracker;
 static uint32_t g_seqNo = 0;
 
 static void NwkNetworkFormationConfirm(Ptr<ZigbeeStack> stack, NlmeNetworkFormationConfirmParams params) {
@@ -200,12 +201,22 @@ static void NwkDataIndication(Ptr<ZigbeeStack> stack, NldeDataIndicationParams p
   memcpy(&seqNo, header + 4, 4);
   memcpy(&sendTime, header + 8, 8);
 
+  uint32_t destNodeId = stack->GetNode()->GetId();
+
+  // Duplicate check
+  auto& srcMap = receivedTracker[destNodeId];
+  auto& seqSet = srcMap[srcNodeId];
+  if (seqSet.count(seqNo) > 0) {
+    NS_LOG_WARN("Duplicate packet at Node" << destNodeId << " from Node" << srcNodeId << " [seq=" << seqNo
+                                           << "] ignored");
+    return;
+  }
+  seqSet.insert(seqNo);
+
   double recvTime = Simulator::Now().GetSeconds();
   double delay = recvTime - sendTime;
 
   double lqi = params.m_linkQuality; // 0..255
-
-  uint32_t destNodeId = stack->GetNode()->GetId();
 
   auto& info = qosMap[destNodeId];
   info.recvPackets += 1;
